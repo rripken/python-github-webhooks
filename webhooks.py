@@ -35,7 +35,7 @@ from flask import Flask, request, abort
 application = Flask(__name__)
 
 
-@application.route('/', methods=['GET', 'POST'])
+@application.route('/hec-monolith/', methods=['GET', 'POST'])
 def index():
     """
     Main WSGI application entry.
@@ -78,11 +78,11 @@ def index():
             abort(403)
 
         sha_name, signature = header_signature.split('=')
-        if sha_name != 'sha1':
+        if sha_name != 'sha1' and sha_name != 'sha256':
             abort(501)
 
         # HMAC requires the key to be bytes, but data is string
-        mac = hmac.new(str(secret), msg=request.data, digestmod='sha1')
+        mac = hmac.new(str(secret), msg=request.data, digestmod=sha_name)
 
         # Python prior to 2.7.7 does not have hmac.compare_digest
         if hexversion >= 0x020707F0:
@@ -96,7 +96,7 @@ def index():
                 abort(403)
 
     # Implement ping
-    event = request.headers.get('X-GitHub-Event', 'ping')
+    event = request.headers.get('X-GitHub-Event')
     if event == 'ping':
         return dumps({'msg': 'pong'})
 
