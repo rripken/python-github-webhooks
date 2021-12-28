@@ -16,11 +16,11 @@
 # under the License.
 import hashlib
 import logging
+import os
 from sys import stderr, hexversion
 logging.basicConfig(stream=stderr, level=logging.INFO)
 
 import hmac
-from hashlib import sha1
 from json import loads, dumps
 from subprocess import Popen, PIPE
 from tempfile import mkstemp
@@ -53,59 +53,8 @@ def index():
 
     hooks = config.get('hooks_path', join(path, 'hooks'))
 
-    # Allow Github IPs only
-    if config.get('github_ips_only', True):
-        src_ip = ip_address(
-            u'{}'.format(request.access_route[0])  # Fix stupid ipaddress issue
-        )
-        whitelist = requests.get('https://api.github.com/meta').json()['hooks']
-
-        for valid_ip in whitelist:
-            if src_ip in ip_network(valid_ip):
-                break
-        else:
-            logging.error('IP {} not allowed'.format(
-                src_ip
-            ))
-            abort(403)
-
-    # Enforce secret
-    secret = config.get('enforce_secret', '')
-    if secret:
-        logging.info("Neeed to check secret")
-        # Only SHA1 is supported
-        header_signature = request.headers.get('X-Hub-Signature')
-        if header_signature is None:
-            abort(403)
-
-        sha_name, signature = header_signature.split('=')
-        
-        dmod = None
-        if sha_name == 'sha1':
-            dmod = hashlib.sha1
-        if sha_name == 'sha256':
-            dmod = hashlib.sha256
-        
-        if dmod is None:
-            abort(501)
-        
-        # HMAC requires the key to be bytes, but data is string
-        mac = hmac.new(str(secret), msg=request.data, digestmod=dmod)
-
-        # Python prior to 2.7.7 does not have hmac.compare_digest
-        if hexversion >= 0x020707F0:
-            if not hmac.compare_digest(str(mac.hexdigest()), str(signature)):
-                logging.warning("Signature compare mismatch")
-                abort(403)
-        else:
-            # What compare_digest provides is protection against timing
-            # attacks; we can live without this protection for a web-based
-            # application
-            if not str(mac.hexdigest()) == str(signature):
-                logging.warning("Signature mismatch")
-                abort(403)
-            else:
-                logging.info('HMAC signature verified')
+    check_ips(config)
+    enforce_secret(config)
 
     # Implement ping
     event = request.headers.get('X-GitHub-Event')
@@ -121,7 +70,7 @@ def index():
         logging.warning('Request parsing failed')
         abort(400)
 
-    branch = getBranch(event, payload)
+    branch = get_branch(event, payload)
 
     # All current events have a repository, but some legacy events do not,
     # so let's be safe
@@ -139,24 +88,8 @@ def index():
         logging.info('Skipping push-delete event for {}'.format(dumps(meta)))
         return dumps({'status': 'skipped'})
 
-    # Possible hooks
-    scripts = []
-    if branch and name:
-        scripts.append(join(hooks, '{event}-{name}-{branch}'.format(**meta)))
-    if name:
-        scripts.append(join(hooks, '{event}-{name}'.format(**meta)))
-    scripts.append(join(hooks, '{event}'.format(**meta)))
-    scripts.append(join(hooks, 'all'))
+    scripts = get_scripts(branch, hooks, meta, name)
 
-    # Check permissions
-    scripts = []
-    for s in scripts:
-        if isfile(s):
-            if access(s, X_OK):
-                scripts.append(s)
-            else:
-                logging.warning('X_OK Permission denied for {}'.format(s))
-        
     if not scripts:
         return dumps({'status': 'nop'})
 
@@ -198,7 +131,88 @@ def index():
     logging.info(output)
     return output
 
-def getBranch(event, payload):
+def get_scripts(branch, hooks_dir, meta, name):
+    # Possible hooks
+    paths = []
+    if branch and name:
+        paths.append(join(hooks_dir, '{event}-{name}-{branch}'.format(**meta)))
+    if name:
+        paths.append(join(hooks_dir, '{event}-{name}'.format(**meta)))
+    paths.append(join(hooks_dir, '{event}'.format(**meta)))
+    paths.append(join(hooks_dir, 'all'))
+    
+    # Check permissions
+    scripts = []
+    for s in paths:
+        if os.path.commonprefix((os.path.realpath(s), hooks_dir)) != hooks_dir:
+            # Make sure we're not trying to run a script outside the hooks dir
+            logging.error('{} is not in {}'.format(s, hooks_dir))
+        if isfile(s):
+            if access(s, X_OK):
+                scripts.append(s)
+            else:
+                logging.warning('X_OK Permission denied for {}'.format(s))
+    return scripts
+
+def check_ips(config):
+    # Allow Github IPs only
+    if config.get('github_ips_only', True):
+        src_ip = ip_address(
+            u'{}'.format(request.access_route[0])  # Fix stupid ipaddress issue
+        )
+        whitelist = requests.get('https://api.github.com/meta').json()['hooks']
+        
+        for valid_ip in whitelist:
+            if src_ip in ip_network(valid_ip):
+                break
+        else:
+            logging.error('IP {} not allowed'.format(
+                src_ip
+            ))
+            abort(403)
+
+def enforce_secret(config):
+    # Enforce secret
+    secret = config.get('enforce_secret', '')
+    if secret:
+        logging.info("Need to check secret")
+        # Only SHA1 is supported
+        header_signature = request.headers.get('X-Hub-Signature')
+        if header_signature is None:
+            abort(403)
+        
+        sha_name, signature = header_signature.split('=')
+        
+        dmod = None
+        if sha_name == 'sha1':
+            dmod = hashlib.sha1
+        if sha_name == 'sha256':
+            dmod = hashlib.sha256
+        
+        if dmod is None:
+            abort(501)
+        
+        # HMAC requires the key to be bytes, but data is string
+        mac = hmac.new(str(secret), msg=request.data, digestmod=dmod)
+        
+        # Python prior to 2.7.7 does not have hmac.compare_digest
+        if hexversion >= 0x020707F0:
+            if not hmac.compare_digest(str(mac.hexdigest()), str(signature)):
+                logging.warning("Signature compare mismatch")
+                abort(403)
+            else:
+                logging.info('HMAC signature verified')
+        else:
+            # What compare_digest provides is protection against timing
+            # attacks; we can live without this protection for a web-based
+            # application
+            if not str(mac.hexdigest()) == str(signature):
+                logging.warning("Signature mismatch")
+                abort(403)
+            else:
+                logging.info('HMAC signature verified')
+
+def get_branch(event, payload):
     # Determining the branch is tricky, as it only appears for certain event
     # types an at different levels
     branch = None
