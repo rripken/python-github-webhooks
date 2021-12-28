@@ -14,7 +14,7 @@
 # KIND, either express or implied.  See the License for the
 # specific language governing permissions and limitations
 # under the License.
-
+import hashlib
 import logging
 from sys import stderr, hexversion
 logging.basicConfig(stream=stderr)
@@ -78,11 +78,18 @@ def index():
             abort(403)
 
         sha_name, signature = header_signature.split('=')
-        if sha_name != 'sha1' and sha_name != 'sha256':
+        
+        dmod = None
+        if sha_name == 'sha1':
+            dmod = hashlib.sha1
+        if sha_name == 'sha256':
+            dmod = hashlib.sha256
+        
+        if dmod is None:
             abort(501)
-
+        
         # HMAC requires the key to be bytes, but data is string
-        mac = hmac.new(str(secret), msg=request.data, digestmod=sha_name)
+        mac = hmac.new(str(secret), msg=request.data, digestmod=dmod)
 
         # Python prior to 2.7.7 does not have hmac.compare_digest
         if hexversion >= 0x020707F0:
