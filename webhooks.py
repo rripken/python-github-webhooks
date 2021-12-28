@@ -17,7 +17,7 @@
 import hashlib
 import logging
 from sys import stderr, hexversion
-logging.basicConfig(stream=stderr)
+logging.basicConfig(stream=stderr, level=logging.INFO)
 
 import hmac
 from hashlib import sha1
@@ -72,6 +72,7 @@ def index():
     # Enforce secret
     secret = config.get('enforce_secret', '')
     if secret:
+        logging.info("Neeed to check secret")
         # Only SHA1 is supported
         header_signature = request.headers.get('X-Hub-Signature')
         if header_signature is None:
@@ -94,51 +95,33 @@ def index():
         # Python prior to 2.7.7 does not have hmac.compare_digest
         if hexversion >= 0x020707F0:
             if not hmac.compare_digest(str(mac.hexdigest()), str(signature)):
+                logging.warning("Signature compare mismatch")
                 abort(403)
         else:
             # What compare_digest provides is protection against timing
             # attacks; we can live without this protection for a web-based
             # application
             if not str(mac.hexdigest()) == str(signature):
+                logging.warning("Signature mismatch")
                 abort(403)
+            else:
+                logging.info('HMAC signature verified')
 
     # Implement ping
     event = request.headers.get('X-GitHub-Event')
     if event == 'ping':
+        logging.info("Event was ping")
         return dumps({'msg': 'pong'})
 
     # Gather data
     try:
         payload = request.get_json()
+        logging.info("parsed request")
     except Exception:
         logging.warning('Request parsing failed')
         abort(400)
 
-    # Determining the branch is tricky, as it only appears for certain event
-    # types an at different levels
-    branch = None
-    try:
-        # Case 1: a ref_type indicates the type of ref.
-        # This true for create and delete events.
-        if 'ref_type' in payload:
-            if payload['ref_type'] == 'branch':
-                branch = payload['ref']
-
-        # Case 2: a pull_request object is involved. This is pull_request and
-        # pull_request_review_comment events.
-        elif 'pull_request' in payload:
-            # This is the TARGET branch for the pull-request, not the source
-            # branch
-            branch = payload['pull_request']['base']['ref']
-
-        elif event in ['push']:
-            # Push events provide a full Git ref in 'ref' and not a 'ref_type'.
-            branch = payload['ref'].split('/', 2)[2]
-
-    except KeyError:
-        # If the payload structure isn't what we expect, we'll live without
-        # the branch name
-        pass
+    branch = getBranch(event, payload)
 
     # All current events have a repository, but some legacy events do not,
     # so let's be safe
@@ -166,7 +149,14 @@ def index():
     scripts.append(join(hooks, 'all'))
 
     # Check permissions
-    scripts = [s for s in scripts if isfile(s) and access(s, X_OK)]
+    scripts = []
+    for s in scripts:
+        if isfile(s):
+            if access(s, X_OK):
+                scripts.append(s)
+            else:
+                logging.warning('X_OK Permission denied for {}'.format(s))
+        
     if not scripts:
         return dumps({'status': 'nop'})
 
@@ -208,6 +198,33 @@ def index():
     logging.info(output)
     return output
 
+def getBranch(event, payload):
+    # Determining the branch is tricky, as it only appears for certain event
+    # types an at different levels
+    branch = None
+    try:
+        # Case 1: a ref_type indicates the type of ref.
+        # This true for create and delete events.
+        if 'ref_type' in payload:
+            if payload['ref_type'] == 'branch':
+                branch = payload['ref']
+        
+        # Case 2: a pull_request object is involved. This is pull_request and
+        # pull_request_review_comment events.
+        elif 'pull_request' in payload:
+            # This is the TARGET branch for the pull-request, not the source
+            # branch
+            branch = payload['pull_request']['base']['ref']
+        
+        elif event in ['push']:
+            # Push events provide a full Git ref in 'ref' and not a 'ref_type'.
+            branch = payload['ref'].split('/', 2)[2]
+    
+    except KeyError:
+        # If the payload structure isn't what we expect, we'll live without
+        # the branch name
+        pass
+    return branch
 
 if __name__ == '__main__':
     application.run(debug=True, host='0.0.0.0')
