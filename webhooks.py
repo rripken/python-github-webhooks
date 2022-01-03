@@ -51,13 +51,12 @@ def index():
     with open(join(path, 'config.json'), 'r') as cfg:
         config = loads(cfg.read())
 
-    hooks = config.get('hooks_path', join(path, 'hooks'))
 
     check_ips(config)
     enforce_secret(config)
 
     # Implement ping
-    event = request.headers.get('X-GitHub-Event')
+    event = request.headers.get('X-Event-Key')
     if event == 'ping':
         logging.info("Event was ping")
         return dumps({'msg': 'pong'})
@@ -72,9 +71,7 @@ def index():
 
     branch = get_branch(event, payload)
 
-    # All current events have a repository, but some legacy events do not,
-    # so let's be safe
-    name = payload['repository']['name'] if 'repository' in payload else None
+    name = get_name(payload)
 
     meta = {
         'name': name,
@@ -88,7 +85,8 @@ def index():
         logging.info('Skipping push-delete event for {}'.format(dumps(meta)))
         return dumps({'status': 'skipped'})
 
-    scripts = get_scripts(branch, hooks, meta, name)
+    hooks_dir = config.get('hooks_path', join(path, 'hooks'))
+    scripts = get_scripts(branch, hooks_dir, meta, name)
 
     if not scripts:
         return dumps({'status': 'nop'})
@@ -130,6 +128,18 @@ def index():
     output = dumps(ran, sort_keys=True, indent=4)
     logging.info(output)
     return output
+
+def get_name(payload):
+    # All current events have a repository, but some legacy events do not,
+    # so let's be safe
+    # name = payload['repository']['name'] if 'repository' in payload else None
+    if 'repository' in payload:
+        name = payload['repository']['name']
+    elif 'pullRequest' in payload:
+        name = payload['pullRequest']['toRef']['repository']['name']
+    else:
+        name = None
+    return name
 
 def get_scripts(branch, hooks_dir, meta, name):
     # Possible hooks
@@ -212,7 +222,8 @@ def enforce_secret(config):
             else:
                 logging.info('HMAC signature verified')
 
-def get_branch(event, payload):
+# keeping this as a reference.
+def get_branch_github(event, payload):
     # Determining the branch is tricky, as it only appears for certain event
     # types an at different levels
     branch = None
@@ -233,6 +244,19 @@ def get_branch(event, payload):
         elif event in ['push']:
             # Push events provide a full Git ref in 'ref' and not a 'ref_type'.
             branch = payload['ref'].split('/', 2)[2]
+    
+    except KeyError:
+        # If the payload structure isn't what we expect, we'll live without
+        # the branch name
+        pass
+    return branch
+
+# Mostly care about pullRequests for now.
+def get_branch(event, payload):
+    branch = None
+    try:
+        if 'pullRequest' in payload:
+            branch = payload['pullRequest']['toRef']['displayId']
     
     except KeyError:
         # If the payload structure isn't what we expect, we'll live without
