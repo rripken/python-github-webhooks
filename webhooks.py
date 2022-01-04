@@ -55,8 +55,8 @@ def index():
     check_ips(config)
     enforce_secret(config)
 
+    event = get_event()
     # Implement ping
-    event = request.headers.get('X-Event-Key')
     if event == 'ping':
         logging.info("Event was ping")
         return dumps({'msg': 'pong'})
@@ -128,6 +128,17 @@ def index():
     output = dumps(ran, sort_keys=True, indent=4)
     logging.info(output)
     return output
+
+def get_event():
+    event = request.headers.get('X-Event-Key')
+    
+    # For a pr merge the eventKey looked like pr:merged and we want this method to just return "merged"
+    
+    # if event contains ':' we should split on ':' and take the last part
+    if ':' in event:
+        event = event.split(':')[-1]
+    
+    return event
 
 def get_name(payload):
     # All current events have a repository, but some legacy events do not,
