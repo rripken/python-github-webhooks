@@ -64,7 +64,6 @@ def index():
     # Gather data
     try:
         payload = request.get_json()
-        logging.info("parsed request")
     except Exception:
         logging.warning('Request parsing failed')
         abort(400)
@@ -203,35 +202,38 @@ def enforce_secret(config):
             abort(403)
         
         sha_name, signature = header_signature.split('=')
-        
-        dmod = None
-        if sha_name == 'sha1':
-            dmod = hashlib.sha1
-        if sha_name == 'sha256':
-            dmod = hashlib.sha256
-        
-        if dmod is None:
-            abort(501)
-        
-        # HMAC requires the key to be bytes, but data is string
-        mac = hmac.new(str(secret), msg=request.data, digestmod=dmod)
-        
-        # Python prior to 2.7.7 does not have hmac.compare_digest
-        if hexversion >= 0x020707F0:
-            if not hmac.compare_digest(str(mac.hexdigest()), str(signature)):
-                logging.warning("Signature compare mismatch")
-                abort(403)
-            else:
-                logging.info('HMAC signature verified')
-        else:
-            # What compare_digest provides is protection against timing
-            # attacks; we can live without this protection for a web-based
-            # application
-            if not str(mac.hexdigest()) == str(signature):
-                logging.warning("Signature mismatch")
-                abort(403)
-            else:
-                logging.info('HMAC signature verified')
+
+        hexdigest = build_digest(secret, sha_name)
+
+        verified = verify_digest(hexdigest, signature)
+
+        if not verified:
+            abort(403)
+
+def verify_digest(hexdigest, signature):
+    # Python prior to 2.7.7 does not have hmac.compare_digest
+    verified = False
+    if hexversion >= 0x020707F0:
+        verified = hmac.compare_digest(str(hexdigest), str(signature))
+    else:
+        # What compare_digest provides is protection against timing
+        # attacks; we can live without this protection for a web-based
+        # application
+        verified = str(hexdigest) == str(signature)
+    return verified
+
+def build_digest(secret, sha_name):
+    dmod = None
+    if sha_name == 'sha1':
+        dmod = hashlib.sha1
+    if sha_name == 'sha256':
+        dmod = hashlib.sha256
+    if dmod is None:
+        abort(501)
+    # HMAC requires the key to be bytes, but data is string
+    mac = hmac.new(str(secret), msg=request.data, digestmod=dmod)
+    hexdigest = mac.hexdigest()
+    return hexdigest
 
 # keeping this as a reference.
 def get_branch_github(event, payload):
@@ -268,6 +270,8 @@ def get_branch(event, payload):
     try:
         if 'pullRequest' in payload:
             branch = payload['pullRequest']['toRef']['displayId']
+        elif 'changes' in payload:
+            branch = payload['changes'][0]['refId'].split('/', 2)[2]
     
     except KeyError:
         # If the payload structure isn't what we expect, we'll live without
