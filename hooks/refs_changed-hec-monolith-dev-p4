@@ -1,9 +1,9 @@
 #!/bin/bash -x
 cd ~ryan/Monolith9 && \
 git fetch origin && \
-git -c http.extraHeader="Authorization: Bearer $BITBUCKET_API" fetch bitbucket-remote && \
+git fetch bitbucket-remote && \
 git checkout origin/dev-p4 && \
 git branch -D dev-p4 && \ 
 git switch -C dev-p4 && \
-git -c http.extraHeader="Authorization: Bearer $BITBUCKET_API" pull -r --ff-only bitbucket-remote dev-p4 && \
+git pull -r --ff-only bitbucket-remote dev-p4 && \
 git push origin dev-p4
